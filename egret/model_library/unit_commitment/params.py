@@ -13,7 +13,7 @@ import math
 from egret.data.data_utils import map_items, zip_items
 from egret.model_library.transmission import tx_utils
 from egret.common.log import logger
-    
+import copy
 from .uc_utils import add_model_attr, uc_time_helper
 
 component_name = 'data_loader'
@@ -38,7 +38,7 @@ def _verify_must_run_t0_state_consistency(model):
                 for t in range(m.TimePeriods.first(), value(m.InitialTimePeriodsOnLine[g])+m.TimePeriods.first()):
                     fixed_commitment = value(m.FixedCommitment[g,t])
                     if (fixed_commitment is not None) and (fixed_commitment == 0):
-                        print("DATA ERROR: The generator %s has been flagged as off at time %d, but its T0 state=%d is inconsistent with its minimum up time=%d" % (g, t, t0_state, min_up_time))
+                        print("DATA ERROR: The generator %s has been flagged as off at time %d, but its T0 state=%d is inconsistent with its minimum up time=%d" % (g, t, t0_state, min_down_time))
                         return False
         return True
     
@@ -84,7 +84,6 @@ def load_params(model, model_data):
     elements = md.data['elements']
 
     time_keys = system['time_keys']
-    
     ## insert potentially missing keys
     if 'branch' not in elements:
         elements['branch'] = dict()
@@ -92,8 +91,6 @@ def load_params(model, model_data):
         elements['interface'] = dict()
     if 'storage' not in elements:
         elements['storage'] = dict()
-    if 'dc_branch' not in elements:
-        elements['dc_branch'] = dict()
 
     ## NOTE: generator, bus, and load should be in here for a well-defined problem
 
@@ -104,24 +101,36 @@ def load_params(model, model_data):
     shunts = dict(md.elements(element_type='shunt'))
     branches = dict(md.elements(element_type='branch'))
     interfaces = dict(md.elements(element_type='interface'))
-    contingencies = dict(md.elements(element_type='contingency'))
     storage = dict(md.elements(element_type='storage'))
-    dc_branches = dict(md.elements(element_type='dc_branch'))
 
     thermal_gen_attrs = md.attributes(element_type='generator', generator_type='thermal')
+    #########################Added by Ahsan##############################
+    a = copy.deepcopy(thermal_gen_attrs)
+    for k,v in thermal_gen_attrs.items():        
+        if type(k) == dict:
+            for iter in v.keys():
+                if iter.find('T2')!=-1 or iter.find('T3')!=-1:
+                    del a[k][iter]
+        elif k == 'names':
+            n = 0
+            for c in v:
+                if c.find('T2')!=-1 or c.find('T3')!=-1:
+                    n = a[k].index(c)
+                    del a[k][n]                       
+        #parse through v.keys()
+        #print(v)
+    thermal_gen_reliable_attrs = copy.deepcopy(a)
+    #########################Added by Ahsan##############################
     renewable_gen_attrs = md.attributes(element_type='generator', generator_type='renewable')
     bus_attrs = md.attributes(element_type='bus')
     branch_attrs = md.attributes(element_type='branch')
     load_attrs = md.attributes(element_type='load')
     interface_attrs = md.attributes(element_type='interface')
     storage_attrs = md.attributes(element_type='storage')
-    dc_branch_attrs = md.attributes(element_type='dc_branch')
 
 
     inlet_branches_by_bus, outlet_branches_by_bus = \
         tx_utils.inlet_outlet_branches_by_bus(branches, buses)
-    dc_inlet_branches_by_bus, dc_outlet_branches_by_bus = \
-        tx_utils.inlet_outlet_branches_by_bus(dc_branches, buses)
     thermal_gens_by_bus = tx_utils.gens_by_bus(buses, thermal_gens)
     renewable_gens_by_bus = tx_utils.gens_by_bus(buses, renewable_gens)
     storage_by_bus = tx_utils.gens_by_bus(buses, storage)
@@ -136,8 +145,6 @@ def load_params(model, model_data):
     model._shunts = shunts
     model._bus_gs_fixed_shunts = bus_gs_fixed_shunts
     model._interfaces = interfaces
-    model._contingencies = contingencies
-    model._dc_branches = dc_branches
     #model._TimeMapper = TimeMapper
 
     #
@@ -195,40 +202,19 @@ def load_params(model, model_data):
     ##############################################
     
     model.TransmissionLines = Set(initialize=branch_attrs['names'])
-    model.HVDCLines = Set(initialize=dc_branch_attrs['names'])
     
     model.BusFrom = Param(model.TransmissionLines, within=model.Buses, initialize=branch_attrs.get('from_bus', dict()))
     model.BusTo   = Param(model.TransmissionLines, within=model.Buses, initialize=branch_attrs.get('to_bus', dict()))
 
-    model.HVDCBusFrom = Param(model.HVDCLines, within=model.Buses, initialize=dc_branch_attrs.get('from_bus', dict()))
-    model.HVDCBusTo   = Param(model.HVDCLines, within=model.Buses, initialize=dc_branch_attrs.get('to_bus', dict()))
-
     model.LinesTo = Set(model.Buses, initialize=inlet_branches_by_bus)
     model.LinesFrom = Set(model.Buses, initialize=outlet_branches_by_bus)
 
-    model.HVDCLinesTo = Set(model.Buses, initialize=dc_inlet_branches_by_bus)
-    model.HVDCLinesFrom = Set(model.Buses, initialize=dc_outlet_branches_by_bus)
-
-    def _warn_neg_impedence(m, v, l):
-        if v == 0.:
-            logger.error(f"Found zero reactance for line {l}")
-            return False
-        elif v < 0.:
-            # We allow negative reactance, as it just reverses the
-            # direction of the line. But we do print a warning.
-            logger.warning(f"WARNING: found negative reactance for line {l}")
-            return True
-        return True
-    model.Impedence = Param(model.TransmissionLines, within=Reals, initialize=branch_attrs.get('reactance', dict()), validate=_warn_neg_impedence)
+    model.Impedence = Param(model.TransmissionLines, within=NonNegativeReals, initialize=branch_attrs.get('reactance', dict()))
 
     model.ThermalLimit = Param(model.TransmissionLines, initialize=branch_attrs.get('rating_long_term', dict())) # max flow across the line
-    model.HVDCThermalLimit = Param(model.HVDCLines, initialize=dc_branch_attrs.get('rating_long_term', dict())) # max flow across the line
 
     model.LineOutOfService = Param(model.TransmissionLines, model.TimePeriods, within=Boolean, default=False,
                                     initialize=TimeMapper(branch_attrs.get('planned_outage', dict())))
-
-    model.HVDCLineOutOfService = Param(model.HVDCLines, model.TimePeriods, within=Boolean, default=False,
-                                       initialize=TimeMapper(dc_branch_attrs.get('planned_outage', dict())))
 
     _branch_penalties = dict()
     _md_violation_penalties = branch_attrs.get('violation_penalty')
@@ -283,12 +269,14 @@ def load_params(model, model_data):
 
     model.InterfaceLimitPenalty = Param(model.InterfacesWithSlack, within=NonNegativeReals, initialize=_interface_penalties)
   
+    
     ##########################################################
     # string indentifiers for the set of thermal generators. #
     # and their locations. (S)                               #
     ##########################################################
     
     model.ThermalGenerators = Set(initialize=thermal_gen_attrs['names'])
+    model.ThermalGeneratorsReliable = Set(initialize=thermal_gen_reliable_attrs['names'])
     model.ThermalGeneratorsAtBus = Set(model.Buses, initialize=thermal_gens_by_bus)
     
     model.ThermalGeneratorType = Param(model.ThermalGenerators, within=Any, default='C', initialize=thermal_gen_attrs.get('fuel', dict()))
@@ -302,7 +290,7 @@ def load_params(model, model_data):
     
     model.VerifyThermalGeneratorBuses = BuildAction(model.ThermalGenerators, rule=verify_thermal_generator_buses_rule)
     
-    model.QuickStart = Param(model.ThermalGenerators, within=Boolean, default=False, initialize=thermal_gen_attrs.get('fast_start', dict()))
+    model.QuickStart = Param(model.ThermalGenerators, within=Boolean, default=False, initialize=thermal_gen_attrs.get('quickstart_capable', dict()))
     
     def init_quick_start_generators(m):
         return [g for g in m.ThermalGenerators if value(m.QuickStart[g]) == 1]
@@ -338,16 +326,10 @@ def load_params(model, model_data):
     bus_loads = { (b,t) : 0 for b in bus_attrs['names'] for t in model.TimePeriods}
 
     for lname, load in loads.items():
-        load_time = TimeMapper(load['p_load'])
         bus = load['bus']
-        if isinstance(bus, dict):
-            assert bus['data_type'] == 'load_distribution_factor'
-            for bn, multi in bus['values'].items():
-                for t in model.TimePeriods:
-                    bus_loads[bn, t] += multi*load_time[t]
-        else:
-            for t in model.TimePeriods:
-                bus_loads[bus, t] += load_time[t]
+        load_time = TimeMapper(load['p_load'])
+        for t in model.TimePeriods:
+            bus_loads[bus, t] += load_time[t]
     model.Demand = Param(model.Buses, model.TimePeriods, initialize=bus_loads, mutable=True)
     
     def calculate_total_demand(m, t):
@@ -387,12 +369,12 @@ def load_params(model, model_data):
     ## Assert that MUT and MDT are at least 1 in the time units of the model.
     ## Otherwise, turn on/offs may not be enforced correctly.
     def scale_min_uptime(m, g):
-        scaled_up_time = int(math.ceil(m.MinimumUpTime[g] / m.TimePeriodLengthHours))
+        scaled_up_time = int(round(m.MinimumUpTime[g] / m.TimePeriodLengthHours))
         return min(max(scaled_up_time,1), value(m.NumTimePeriods))
     model.ScaledMinimumUpTime = Param(model.ThermalGenerators, within=NonNegativeIntegers, initialize=scale_min_uptime)
     
     def scale_min_downtime(m, g):
-        scaled_down_time = int(math.ceil(m.MinimumDownTime[g] / m.TimePeriodLengthHours))
+        scaled_down_time = int(round(m.MinimumDownTime[g] / m.TimePeriodLengthHours))
         return min(max(scaled_down_time,1), value(m.NumTimePeriods))
     model.ScaledMinimumDownTime = Param(model.ThermalGenerators, within=NonNegativeIntegers, initialize=scale_min_downtime)
     
@@ -434,7 +416,7 @@ def load_params(model, model_data):
     
     model.MinNondispatchablePower = Param(model.AllNondispatchableGenerators,
                                             model.TimePeriods, 
-                                            within=Reals, # more permissive; e.g. CSP
+                                            within=NonNegativeReals,
                                             default=0.0,
                                             mutable=True,
                                             initialize=TimeMapper(renewable_gen_attrs.get('p_min', dict())))
@@ -444,7 +426,7 @@ def load_params(model, model_data):
     
     model.MaxNondispatchablePower = Param(model.AllNondispatchableGenerators,
                                             model.TimePeriods,
-                                            within=Reals, # more permissive; e.g. CSP
+                                            within=NonNegativeReals,
                                             default=0.0,
                                             mutable=True,
                                             validate=maximum_nd_output_validator,
@@ -468,7 +450,7 @@ def load_params(model, model_data):
                 continue
             diff = value(m.MinimumPowerOutput[g,t] - m.MaximumPowerOutput[g,t-1])
             if v*m.TimePeriodLengthHours < diff:
-                logger.error('Generator {} has an infeasible ramp up between time periods {} and {}'.format(g,t-1,t))
+                logger.warn('Generator {} has an infeasible ramp up between time periods {} and {}'.format(g,t-1,t))
                 return False
         return True
 
@@ -481,7 +463,7 @@ def load_params(model, model_data):
                 continue
             diff = value(m.MinimumPowerOutput[g,t-1] - m.MaximumPowerOutput[g,t])
             if v*m.TimePeriodLengthHours < diff:
-                logger.error('Generator {} has an infeasible ramp down between time periods {} and {}'.format(g,t-1,t))
+                logger.warn('Generator {} has an infeasible ramp down between time periods {} and {}'.format(g,t-1,t))
                 return False
         return True
 
@@ -506,7 +488,7 @@ def load_params(model, model_data):
     # the value cannot be 0, by definition.
     
     def t0_state_nonzero_validator(m, v, g):
-        return v != 0.
+        return v != 0
     
     model.UnitOnT0State = Param(model.ThermalGenerators,
                                 within=Reals,
@@ -515,7 +497,7 @@ def load_params(model, model_data):
                                 initialize=thermal_gen_attrs['initial_status'])
     
     def t0_unit_on_rule(m, g):
-        return int(value(m.UnitOnT0State[g]) > 0.)
+        return int(value(m.UnitOnT0State[g]) >= 1)
     
     model.UnitOnT0 = Param(model.ThermalGenerators,
                             within=Binary,
@@ -524,92 +506,32 @@ def load_params(model, model_data):
     
     _add_initial_time_periods_on_off_line(model)
     _verify_must_run_t0_state_consistency(model)
-
-    # For future shutdowns/startups beyond the time-horizon
-    # Like UnitOnT0State, a postive quantity means the generator
-    # *will start* in 'future_status' hours, and a negative quantity
-    # means the generator *will stop* in -('future_status') hours.
-    # The default of 0 means we have no information
-    model.FutureStatus = Param(model.ThermalGenerators,
-                               within=Reals,
-                               mutable=True,
-                               default=0.,
-                               initialize=thermal_gen_attrs.get('future_status', dict()))
-
-    def time_periods_since_last_shutdown_rule(m,g):
-        if value(m.UnitOnT0[g]):
-            # longer than any time-horizon we'd consider
-            return 10000
-        else:
-            return int(math.ceil( -value(m.UnitOnT0State[g]) / value(m.TimePeriodLengthHours) ))
-    model.TimePeriodsSinceShutdown = Param(model.ThermalGenerators, within=PositiveIntegers, mutable=True,
-                                            initialize=time_periods_since_last_shutdown_rule)
-
-    def time_periods_before_startup_rule(m,g):
-        if value(m.FutureStatus[g]) <= 0:
-            # longer than any time-horizon we'd consider
-            return 10000
-        else:
-            return int(math.ceil( value(m.FutureStatus[g]) / value(m.TimePeriodLengthHours) ))
-    model.TimePeriodsBeforeStartup = Param(model.ThermalGenerators, within=PositiveIntegers, mutable=True,
-                                            initialize=time_periods_before_startup_rule)
-
-    ###############################################
-    # startup/shutdown curves for each generator. #
-    # These are specified in the same time scales #
-    # as 'time_period_length_minutes' and other   #
-    # time-vary quantities.                       #
-    ###############################################
-
-    def startup_curve_init_rule(m,g):
-        startup_curve = thermal_gens[g].get('startup_curve')
-        if startup_curve is None:
-            return ()
-        min_down_time = int(math.ceil(m.MinimumDownTime[g] / m.TimePeriodLengthHours))
-        if len(startup_curve) > min_down_time:
-            logger.warn(f"Truncating startup_curve longer than scaled minimum down time {min_down_time} for generator {g}")
-        return startup_curve[0:min_down_time]
-    model.StartupCurve = Set(model.ThermalGenerators, within=NonNegativeReals, ordered=True, initialize=startup_curve_init_rule)
-
-    def shutdown_curve_init_rule(m,g):
-        shutdown_curve = thermal_gens[g].get('shutdown_curve')
-        if shutdown_curve is None:
-            return ()
-        min_down_time = int(math.ceil(m.MinimumDownTime[g] / m.TimePeriodLengthHours))
-        if len(shutdown_curve) > min_down_time:
-            logger.warn(f"Truncating shutdown_curve longer than scaled minimum down time {min_down_time} for generator {g}")
-        return shutdown_curve[0:min_down_time]
-    model.ShutdownCurve = Set(model.ThermalGenerators, within=NonNegativeReals, ordered=True, initialize=shutdown_curve_init_rule)
     
     ####################################################################
     # generator power output at t=0 (initial condition). units are MW. #
     ####################################################################
 
-    def power_generated_t0_validator(m, v, g):
+    def between_limits_validator(m, v, g):
         t = m.TimePeriods.first() 
 
         if value(m.UnitOnT0[g]):
             v_less_max = v <= value(m.MaximumPowerOutput[g,t] + m.NominalRampDownLimit[g]*m.TimePeriodLengthHours)
             if not v_less_max:
                 logger.error('Generator {} has more output at T0 than is feasible to ramp down to'.format(g))
-                return False
+
             v_greater_min = v >= value(m.MinimumPowerOutput[g,t] - m.NominalRampUpLimit[g]*m.TimePeriodLengthHours)
             if not v_less_max:
                 logger.error('Generator {} has less output at T0 than is feasible to ramp up to'.format(g))
-                return False
             return True
 
         else:
-            # Generator was off, but could have residual power due to
-            # start-up/shut-down curve. Therefore, do not be too picky
-            # as the value doesn't affect any constraints directly
-            return True
+            return v == 0.
 
     model.PowerGeneratedT0 = Param(model.ThermalGenerators, 
-                                   within=NonNegativeReals,
-                                   validate=power_generated_t0_validator,
-                                   mutable=True,
-                                   initialize=thermal_gen_attrs['initial_p_output'])
+                                    within=NonNegativeReals, 
+                                    validate=between_limits_validator, 
+                                    mutable=True,
+                                    initialize=thermal_gen_attrs['initial_p_output'])
     
     # limits for time periods in which generators are brought on or off-line.
     # must be no less than the generator minimum output.
@@ -722,21 +644,13 @@ def load_params(model, model_data):
         else:
             return temp + m.MinimumPowerOutputT0[g]
     model.ScaledShutdownRampLimitT0 = Param(model.ThermalGenerators, within=NonNegativeReals, initialize=scale_shutdown_limit_t0, mutable=True)
-
+    
     ###############################################
     # startup cost parameters for each generator. #
     ###############################################
     
     # startup costs are conceptually expressed as pairs (x, y), where x represents the number of hours that a unit has been off and y represents
     # the cost associated with starting up the unit after being off for x hours. these are broken into two distinct ordered sets, as follows.
-
-    def _get_startup_lag(startup,default):
-        try:
-            iter(startup)
-        except TypeError:
-            return [default]
-        else:
-            return [i[0] for i in startup]
     
     def startup_lags_init_rule(m, g):
         startup_cost = thermal_gens[g].get('startup_cost')
@@ -746,18 +660,10 @@ def load_params(model, model_data):
         if startup_fuel is None and startup_cost is None:
             return [value(m.MinimumDownTime[g])] 
         elif startup_cost is None:
-            return _get_startup_lag(startup_fuel, value(m.MinimumDownTime[g]))
+            return [i[0] for i in startup_fuel]
         else:
-            return _get_startup_lag(startup_cost, value(m.MinimumDownTime[g]))
+            return [i[0] for i in startup_cost]
     model.StartupLags = Set(model.ThermalGenerators, within=NonNegativeReals, ordered=True, initialize=startup_lags_init_rule) # units are hours / time periods.
-
-    def _get_startup_cost(startup, fixed_adder, multiplier):
-        try:
-            iter(startup)
-        except TypeError:
-            return [fixed_adder+multiplier*startup]
-        else:
-            return [fixed_adder+multiplier*i[1] for i in startup]
     
     def startup_costs_init_rule(m, g):
         startup_cost = thermal_gens[g].get('startup_cost')
@@ -771,9 +677,9 @@ def load_params(model, model_data):
             fuel_cost = thermal_gens[g].get('fuel_cost')
             if fuel_cost is None:
                 raise Exception("No fuel cost for generator {}, but data is provided for fuel tracking".format(g))
-            return _get_startup_cost(startup_fuel, fixed_startup_cost, fuel_cost)
+            return [fixed_startup_cost+fuel_cost*i[1] for i in startup_fuel]
         else:
-            return _get_startup_cost(startup_cost, fixed_startup_cost, 1.)
+            return [fixed_startup_cost+i[1] for i in startup_cost]
     model.StartupCosts = Set(model.ThermalGenerators, within=NonNegativeReals, ordered=True, initialize=startup_costs_init_rule) # units are $.
     
     # startup lags must be monotonically increasing...
@@ -797,8 +703,8 @@ def load_params(model, model_data):
     
     # while startup costs must be monotonically non-decreasing!
     def validate_startup_costs_rule(m, g):
-       startup_costs = m.StartupCosts[g]
-       for i in range(1, len(startup_costs)-1):
+       startup_costs = list(m.StartupCosts[g])
+       for i in range(0, len(startup_costs)-2):
           if startup_costs[i] > startup_costs[i+1]:
              print("DATA ERROR: Startup costs for thermal generator="+str(g)+" must be monotonically non-decreasing.")
              assert(False)
@@ -845,18 +751,11 @@ def load_params(model, model_data):
             thermal_gen_attrs['fuel_supply'] = dict()
         if 'aux_fuel_supply' not in thermal_gen_attrs:
             thermal_gen_attrs['aux_fuel_supply'] = dict()
-        fuel_supply = thermal_gen_attrs['fuel_supply']
-        for g in fuel_supply:
-            yield g
-        for g in thermal_gen_attrs['aux_fuel_supply']:
-            if g not in fuel_supply:
-                yield g
+        gen_set = set(thermal_gen_attrs['fuel_supply'].keys())
+        gen_set.update(thermal_gen_attrs['aux_fuel_supply'].keys())
+        return gen_set
 
     def gen_cost_fuel_validator(m,g):
-        # validators may get called once 
-        # with key None for empty sets
-        if g is None:
-            return True
         if 'p_fuel' in thermal_gen_attrs and g in thermal_gen_attrs['p_fuel']:
             pass
         else:
@@ -884,33 +783,71 @@ def load_params(model, model_data):
     ##       In particular, this is done in objective.py.
     
     def _check_curve(m, g, curve, curve_type):
-
+#        if g == 'GEN62T1':
+#            print('Hello')
         for i, t in enumerate(m.TimePeriods):
             ## first, get a cost_curve out of time series
             if curve['data_type'] == 'time_series':
                 curve_t = curve['values'][i]
-                _t = t
             else:
-                curve_t = curve
-                _t = None
+                curve_t = curve 
+                
+            ## validate that what we have is a cost_curve
+            if curve_t['data_type'] != curve_type:
+                raise Exception("p_cost must be of data_type cost_curve.")
 
-            tx_utils.validate_and_clean_cost_curve(curve_t,
-                                                   curve_type=curve_type,
-                                                   p_min=value(m.MinimumPowerOutput[g, t]),
-                                                   p_max=value(m.MaximumPowerOutput[g, t]),
-                                                   gen_name=g,
-                                                   t=_t)
+            ## get the values, check against something empty
+            values = curve_t['values']
+            if len(values) == 0:
+                if curve_t == curve:
+                    logger.warning("WARNING: Generator {} has no cost information associated with it".format(g))
+                    return True
+                else:
+                    logger.warning("WARNING: Generator {} has no cost information associated with it at time {}".format(g,t))
 
-            # if no curve_type+'_type' is specified, we assume piecewise (for backwards
-            # compatibility with no 'fuel_curve_type')
-            if curve_type + '_type' in curve and \
-                    curve_t[curve_type + '_type'] == 'polynomial':
+            ## if we have a piecewise cost curve, ensure its convexity past p_min
+            ## if no curve_type+'_type' is specified, we assume piecewise (for backwards 
+            ## compatibility with no 'fuel_curve_type')
+            if curve_type+'_type' not in curve_t or \
+                    curve_t[curve_type+'_type'] == 'piecewise':
+                if g == 'GEN62T1':
+                    print('Hello')
+                p_min = value(m.MinimumPowerOutput[g,t])
+                last_slope = None
+                for (o1, c1), (o2, c2) in zip(values, values[1:]):
+                    if o2 <= p_min or math.isclose(p_min, o2):
+                        continue
+                    ## else p_min > o2
+                    if last_slope is None:
+                        last_slope = (c2-c1)/(o2-o1)
+                        continue
+                    this_slope = (c2-c1)/(o2-o1)
+                    if this_slope < last_slope and not math.isclose(this_slope, last_slope):
+                        raise Exception("Piecewise {} must be convex above p_min. ".format(curve_type) + \
+                                        "Found non-convex piecewise {} for generator {} at time {}".format(curve_type,g,t))
+                ## verify the last output value is at least p_max
+                o_last = values[-1][0]
+                if value(m.MaximumPowerOutput[g,t]) > o_last and \
+                        not math.isclose(value(m.MaximumPowerOutput[g,t]), o_last):
+                    raise Exception("{} does not contain p_max for generator {} at time {}".format(curve_type,g,t))
+
+            ## if we have a quadratic cost curve, ensure its convexity
+            elif curve_t[curve_type+'_type'] == 'polynomial':
                 if not _check_curve.warn_piecewise_approx:
                     logger.warning("WARNING: Polynomial cost curves will be approximated using piecewise segments")
                     _check_curve.warn_piecewise_approx = True
-
-            if curve['data_type'] != 'time_series':
-                break
+                values = curve_t['values']
+                if set(values.keys()) <= {0,1,2}:
+                    if 2 in values and values[2] < 0:
+                        raise Exception("Polynomial {}s must be convex. ".format(curve_type) + \
+                                        "Found non-convex {} for generator {} at time {}.".format(curve_type,g,t))
+                    if curve_t == curve: ## in this case, no need to check the other time periods
+                        return
+                else:
+                    raise Exception("Polynomial {}s must be quatric. ".format(curve_type) + \
+                                    "Found non-quatric {} for generator {} at time {}.".format(curve_type,g,t))
+            else:
+                raise Exception("Unexpected {}_type".format(curve_type))
 
     ## set "static" variable for this function
     _check_curve.warn_piecewise_approx = False
@@ -982,16 +919,6 @@ def load_params(model, model_data):
     _minimum_production_cost = {}
     _minimum_fuel_consumption = {}
 
-
-    def _eliminate_piecewise_duplicates(input_func):
-        if len(input_func) <= 1:
-            return input_func
-        new = [input_func[0]]
-        for (o1, c1), (o2, c2) in zip(input_func, input_func[1:]):
-            if not math.isclose(o1,o2) and not math.isclose(c1,c2):
-                new.append((o2,c2))
-        return new
-
     def _much_less_than(v1, v2):
         return v1 < v2 and not math.isclose(v1,v2)
 
@@ -1000,8 +927,6 @@ def load_params(model, model_data):
         minimum_val = 0.
         new_points = []
         new_vals = []
-
-        input_func = _eliminate_piecewise_duplicates(input_func)
 
         set_p_min = False
 
@@ -1161,6 +1086,8 @@ def load_params(model, model_data):
                 one_fuel_curve = True
 
             for fuel_curve, fuel_cost, nlc, t in zip(fuel_curves, fuel_costs, no_load_costs, m.TimePeriods):
+                if g == 'GEN62T1':
+                    print('Hello')
                 p_min = value(m.MinimumPowerOutput[g,t])
                 p_max = value(m.MaximumPowerOutput[g,t])
 
@@ -1213,6 +1140,8 @@ def load_params(model, model_data):
             one_cost_curve = True
 
         for cost_curve, nlc, t in zip(cost_curves, no_load_costs, m.TimePeriods):
+            if g == 'GEN62T1':
+                print('Hello')
             p_min = value(m.MinimumPowerOutput[g,t])
             p_max = value(m.MaximumPowerOutput[g,t])
 
@@ -1269,11 +1198,6 @@ def load_params(model, model_data):
     
     model.LoadMismatchPenalty = Param(within=NonNegativeReals, mutable=True, initialize=system.get('load_mismatch_cost', BigPenalty))
     model.LoadMismatchPenaltyReactive = Param(within=NonNegativeReals, mutable=True, initialize=system.get('q_load_mismatch_cost', BigPenalty/2.))
-
-    model.Contingencies = Set(initialize=contingencies.keys())
-
-    # leaving this unindexed for now for simpility
-    model.ContingencyLimitPenalty = Param(within=NonNegativeReals, initialize=system.get('contingency_flow_violation_cost', BigPenalty/2.), mutable=True)
 
     #
     # STORAGE parameters
@@ -1390,18 +1314,9 @@ def load_params(model, model_data):
     
     # end-point values are the SOC targets at the final time period. With no end-point constraints
     # storage units will always be empty at the final time period.
-    def _end_point_soc(m, s):
-        if s is None:
-            return
-        s_dict = storage[s]
-        if 'end_state_of_charge' in s_dict:
-            return s_dict['end_state_of_charge']
-        if 'initial_state_of_charge' in s_dict:
-            return s_dict['initial_state_of_charge']
-        return 0.5
     
     model.EndPointSocStorage = Param(model.Storage, within=PercentFraction, default=0.5,
-                                        initialize=_end_point_soc)
+                                        initialize=storage_attrs.get('initial_state_of_charge', dict()))
     
     ############################################################
     # storage initial conditions: SOC, power output and input  #
@@ -1423,4 +1338,16 @@ def load_params(model, model_data):
                                             initialize=storage_attrs.get('initial_charge_rate', dict()))
     model.StorageSocOnT0         = Param(model.Storage, within=PercentFraction,
                                             default=0.5, initialize=storage_attrs.get('initial_state_of_charge', dict()))
+
+    ##############################################################
+    # failure probability for each generator, in any given hour. #
+    # not used within the model itself at present, but rather    #
+    # used by scripts that read / manipulate the model.          #
+    ##############################################################
+    
+    def probability_failure_validator(m, v, g):
+       return v >= 0.0 and v <= 1.0
+    
+    model.FailureProbability = Param(model.ThermalGenerators, validate=probability_failure_validator, default=0.0)
+    
     return model
