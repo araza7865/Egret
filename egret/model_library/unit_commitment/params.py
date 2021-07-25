@@ -810,8 +810,6 @@ def load_params(model, model_data):
             ## compatibility with no 'fuel_curve_type')
             if curve_type+'_type' not in curve_t or \
                     curve_t[curve_type+'_type'] == 'piecewise':
-                if g == 'GEN62T1':
-                    print('Hello')
                 p_min = value(m.MinimumPowerOutput[g,t])
                 last_slope = None
                 for (o1, c1), (o2, c2) in zip(values, values[1:]):
