@@ -11,7 +11,7 @@
 from pyomo.environ import *
 import math
 
-from .uc_utils import add_model_attr, get_linear_expr
+from .uc_utils import add_model_attr 
 from .reserve_vars import check_reserve_requirement
 component_name = 'objective'
 
@@ -45,14 +45,9 @@ def _3bin_shutdown_costs(model, add_shutdown_cost_var=True):
     if add_shutdown_cost_var:
         model.ShutdownCost = Var(model.ThermalGenerators, model.TimePeriods, within=Reals)
     
-    linear_expr = get_linear_expr(model.UnitStop)
-
     def compute_shutdown_costs_rule(m, g, t):
-        return (linear_expr(
-                    linear_vars=[m.ShutdownCost[g,t], m.UnitStop[g,t]],
-                    linear_coefs=[-1., m.ShutdownFixedCost[g]]),
-                0.)
-
+        return m.ShutdownCost[g,t] ==  m.ShutdownFixedCost[g] * (m.UnitStop[g, t])
+    
     model.ComputeShutdownCosts = Constraint(model.ThermalGenerators, model.TimePeriods, rule=compute_shutdown_costs_rule)
 
 def _add_shutdown_costs(model, add_shutdown_cost_var=True):
@@ -129,7 +124,6 @@ def basic_objective(model):
               sum(m.ReserveShortfallCost[t] for t in m.GenerationTimeInStage[st]) + \
               sum(m.BranchViolationCost[t] for t in m.GenerationTimeInStage[st]) + \
               sum(m.InterfaceViolationCost[t] for t in m.GenerationTimeInStage[st]) + \
-              sum(m.ContingencyViolationCost[t] for t in m.GenerationTimeInStage[st]) + \
               sum(m.StorageCost[s,t] for s in m.Storage for t in m.GenerationTimeInStage[st])
         if m.reactive_power:
             cc += sum(m.LoadMismatchCostReactive[t] for t in m.GenerationTimeInStage[st])
@@ -139,14 +133,22 @@ def basic_objective(model):
             cc += sum(m.RegulationCostGeneration[g,t] for g in m.AGC_Generators for t in m.GenerationTimeInStage[st]) \
                 + sum(m.RegulationCostPenalty[t] for t in m.GenerationTimeInStage[st])
         if m.spinning_reserve:
-            cc += sum(m.SpinningReserveCostGeneration[g,t] for g in m.ThermalGenerators for t in m.GenerationTimeInStage[st]) \
+            ##############################Added by Ahsan##################################
+#            cc += sum(m.SpinningReserveCostGeneration[g,t] for g in m.ThermalGenerators for t in m.GenerationTimeInStage[st]) \
+#                + sum(m.SpinningReserveCostPenalty[t] for t in m.GenerationTimeInStage[st])
+            cc += sum(m.SpinningReserveCostGeneration[g,t] for g in m.ThermalGeneratorsReliable for t in m.GenerationTimeInStage[st]) \
                 + sum(m.SpinningReserveCostPenalty[t] for t in m.GenerationTimeInStage[st])
+            ##############################Added by Ahsan##################################
         if m.non_spinning_reserve:
             cc += sum(m.NonSpinningReserveCostGeneration[g,t] for g in m.NonSpinGenerators for t in m.GenerationTimeInStage[st]) \
                 + sum(m.NonSpinningReserveCostPenalty[t] for t in m.GenerationTimeInStage[st])
         if m.supplemental_reserve:
-            cc += sum(m.SupplementalReserveCostGeneration[g,t] for g in m.ThermalGenerators for t in m.GenerationTimeInStage[st]) \
+            ##############################Added by Ahsan##################################
+#            cc += sum(m.SupplementalReserveCostGeneration[g,t] for g in m.ThermalGenerators for t in m.GenerationTimeInStage[st]) \
+#                + sum(m.SupplementalReserveCostPenalty[t] for t in m.GenerationTimeInStage[st])
+            cc += sum(m.SupplementalReserveCostGeneration[g,t] for g in m.ThermalGeneratorsReliable for t in m.GenerationTimeInStage[st]) \
                 + sum(m.SupplementalReserveCostPenalty[t] for t in m.GenerationTimeInStage[st])
+            ##############################Added by Ahsan##################################
         if m.flexible_ramping:
             cc += sum(m.FlexibleRampingCostPenalty[t] for t in m.GenerationTimeInStage[st])
         return cc
@@ -161,8 +163,8 @@ def basic_objective(model):
     #
     
     def total_cost_objective_rule(m):
-       return sum(m.StageCost[st] for st in m.StageSet)
-
+       return sum(m.StageCost[st] for st in m.StageSet)	
+    
     model.TotalCostObjective = Objective(rule=total_cost_objective_rule, sense=minimize)
 
     return
