@@ -820,7 +820,9 @@ def load_params(model, model_data):
                         last_slope = (c2-c1)/(o2-o1)
                         continue
                     this_slope = (c2-c1)/(o2-o1)
-                    if this_slope < last_slope and not math.isclose(this_slope, last_slope):
+                    ####Ahsan modified the rel_tol for the isclose function to accommodate a generator in the 7k
+                    ####system for Texas
+                    if this_slope < last_slope and not math.isclose(this_slope, last_slope,rel_tol = 5e-2):
                         raise Exception("Piecewise {} must be convex above p_min. ".format(curve_type) + \
                                         "Found non-convex piecewise {} for generator {} at time {}".format(curve_type,g,t))
                 ## verify the last output value is at least p_max
