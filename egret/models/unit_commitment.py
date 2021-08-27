@@ -1639,6 +1639,8 @@ def solve_unit_commitment(model_data,
 if __name__ == '__main__':
     from egret.data.model_data import ModelData
 
+    #hi
+
     # filen = "tests/uc_test_instances/tiny_uc_tc_2.json"
     # md = ModelData.read(filen)
     # md_results = solve_unit_commitment(md, "cbc")
