@@ -199,7 +199,8 @@ def ancillary_services(model):
 
     ## list of possible ancillary services coming
     ## from model_data
-    ancillary_service_list = [ 'spinning_reserve_requirement',
+    ancillary_service_list = [ 'frequency_reserve_requirement',
+                               'spinning_reserve_requirement',
                                'non_spinning_reserve_requirement',
                                'regulation_up_requirement',
                                'regulation_down_requirement',
@@ -226,6 +227,7 @@ def ancillary_services(model):
         return False
 
     ## flags for if ancillary services appear
+    add_frequency_reserve =  _check_for_requirement('frequency_reserve_requirement')
     add_spinning_reserve =  _check_for_requirement('spinning_reserve_requirement')
     add_non_spinning_reserve = _check_for_requirement('non_spinning_reserve_requirement')
     add_regulation_reserve = (_check_for_requirement('regulation_up_requirement') or 
@@ -236,7 +238,7 @@ def ancillary_services(model):
 
     
     ## check here and break if there's nothing to do
-    no_reserves = not (add_spinning_reserve or add_non_spinning_reserve or add_regulation_reserve or add_supplemental_reserve or add_flexi_ramp_reserve)
+    no_reserves = not (add_frequency_reserve or add_spinning_reserve or add_non_spinning_reserve or add_regulation_reserve or add_supplemental_reserve or add_flexi_ramp_reserve)
 
     ## add a flag for which brach we took here
     if no_reserves:
@@ -255,6 +257,12 @@ def ancillary_services(model):
         raise Exception('Exception adding ancillary_services! ancillary_services requires one of: garver_3bin_vars, garver_2bin_vars, garver_3bin_relaxed_stop_vars, ALS_state_transition_vars, to be used for the status_vars.')
 
     ## set some penalties by default based on the other model penalties
+
+    default_freq_pen = value(model.LoadMismatchPenalty+model.ReserveShortfallPenalty)/2.
+    ## I'm currently setting frequency reserve penalty to be equal to regulation reserve penalty
+    model.FrequencyReservePenalty = Param(within=NonNegativeReals,
+                                    initialize=system.get('frequency_penalty_price', default_freq_pen))#you could specify 'frequency_penalty_price' in md.data['system']
+
     default_reg_pen = value(model.LoadMismatchPenalty+model.ReserveShortfallPenalty)/2.
     ## set these penalties in relation to each other, from higher quality service to lower
     model.RegulationPenalty = Param(within=NonNegativeReals,
@@ -337,6 +345,11 @@ def ancillary_services(model):
 
     ## these need to be added by high-quality to low-quality,
     ## except flexiramp which is it's own thing
+    if add_frequency_reserve:
+        frequency_services(model, zone_initializer_builder, zone_requirement_getter, gens_in_reserve_zone_getter) #add this function below
+    else:
+        model.frequency_service = None
+
     if add_regulation_reserve:
         regulation_services(model, zone_initializer_builder, zone_requirement_getter, gens_in_reserve_zone_getter)
     else:
@@ -367,6 +380,7 @@ def ancillary_services(model):
     def ancillary_service_capacity_limit_upper(m, g, t):
         reg = (bool(m.regulation_service) and (g in m.AGC_Generators))
         return m.MaximumPowerAvailable[g,t] \
+                    + (m.PFRProvided[g,t] if add_frequency_reserve else 0.) \
                     + (m.FlexUpProvided[g,t] if add_flexi_ramp_reserve else 0.) \
                     + (m.RegulationReserveUp[g,t] if reg else 0.) \
                     + (m.SpinningReserveDispatched[g,t] if add_spinning_reserve else 0.) \
@@ -392,74 +406,79 @@ def ancillary_services(model):
     ##       MinimumPowerGenerated), which these ramp limts do not allow for tightness and less error checking
     ##       in the base UC/ED constrants
 
-    def as_ramp_up(m,g):
-        return m.NominalRampUpLimit[g]*m.TimePeriodLengthHours
-    model.AS_ScaledNominalRampUpLimit = Param(model.ThermalGenerators, within=NonNegativeReals, initialize=as_ramp_up)
 
-    def as_ramp_down(m,g):
-        return m.NominalRampDownLimit[g]*m.TimePeriodLengthHours
-    model.AS_ScaledNominalRampDownLimit = Param(model.ThermalGenerators, within=NonNegativeReals, initialize=as_ramp_down)
+    ## The constraints below represent ramping constraints for reserves.  Let's ignore them at least initially
+    # def as_ramp_up(m,g):
+    #     return m.NominalRampUpLimit[g]*m.TimePeriodLengthHours
+    # model.AS_ScaledNominalRampUpLimit = Param(model.ThermalGenerators, within=NonNegativeReals, initialize=as_ramp_up)
+    #
+    # def as_ramp_down(m,g):
+    #     return m.NominalRampDownLimit[g]*m.TimePeriodLengthHours
+    # model.AS_ScaledNominalRampDownLimit = Param(model.ThermalGenerators, within=NonNegativeReals, initialize=as_ramp_down)
+    #
+    # ##TODO: FIXME: REVISIT AFTER RAMPING CONSTRAINTS
+    # def as_startup_ramp(m,g,t):
+    #     return (m.StartupRampLimit[g,t] - m.MinimumPowerOutput[g,t])*m.TimePeriodLengthHours + m.MinimumPowerOutput[g,t]
+    # model.AS_ScaledStartupRamp = Param(model.ThermalGenerators, model.TimePeriods, within=NonNegativeReals, initialize=as_startup_ramp)
+    #
+    # def as_shutdown_ramp(m,g,t):
+    #     return (m.ShutdownRampLimit[g,t] - m.MinimumPowerOutput[g,t])*m.TimePeriodLengthHours + m.MinimumPowerOutput[g,t]
+    # model.AS_ScaledShutdownRamp = Param(model.ThermalGenerators, model.TimePeriods, within=NonNegativeReals, initialize=as_shutdown_ramp)
+    #
+    # def as_shutdown_ramp_t0(m,g):
+    #     return (m.ShutdownRampLimitT0[g] - m.MinimumPowerOutputT0[g])*m.TimePeriodLengthHours + m.MinimumPowerOutputT0[g]
+    # model.AS_ScaledShutdownRampT0 = Param(model.ThermalGenerators, within=NonNegativeReals, initialize=as_shutdown_ramp_t0)
+    #
+    # ## These are formulated similarly to the damci-kurt ramp limits
+    # def ancillary_service_ramp_up_limit(m,g,t):
+    #     reg = (bool(m.regulation_service) and (g in m.AGC_Generators))
+    #     if t == m.InitialTime:
+    #         return m.MaximumPowerAvailableAboveMinimum[g, t] - m.PowerGeneratedT0[g]\
+    #                  + ((m.TimePeriodLengthMinutes/m.RegulationMinutes)*m.RegulationReserveUp[g,t] if reg else 0.) \
+    #                  + ((m.TimePeriodLengthMinutes/m.SpinningReserveMinutes)*m.SpinningReserveDispatched[g,t] if add_spinning_reserve else 0.) \
+    #                  + ((m.TimePeriodLengthMinutes/m.FlexRampMinutes)*m.FlexUpProvided[g,t] if add_flexi_ramp_reserve else 0.) \
+    #                  + ((m.TimePeriodLengthMinutes/m.SupplementalReserveMinutes)*m.SupplementalSpinReserveDispatched[g,t] if add_supplemental_reserve else 0.) \
+    #               <= \
+    #                 (m.AS_ScaledNominalRampUpLimit[g] + 0 - m.MinimumPowerOutput[g,t])*m.UnitOn[g,t] + \
+    # 		    (m.AS_ScaledStartupRamp[g,t] - 0 - m.AS_ScaledNominalRampUpLimit[g])*m.UnitStart[g,t]
+    #     else: ## average the regulation and spin over the two time periods, which is what is done in CAISO
+    #         return m.MaximumPowerAvailableAboveMinimum[g, t] - m.PowerGeneratedAboveMinimum[g, t-1] \
+    #                  + ((m.TimePeriodLengthMinutes/m.RegulationMinutes)*(m.RegulationReserveUp[g,t]+m.RegulationReserveUp[g,t-1])/2. if reg else 0.) \
+    #                  + ((m.TimePeriodLengthMinutes/m.SpinningReserveMinutes)*(m.SpinningReserveDispatched[g,t]+m.SpinningReserveDispatched[g,t-1])/2. if add_spinning_reserve else 0.) \
+    #                  + ((m.TimePeriodLengthMinutes/m.FlexRampMinutes)*m.FlexUpProvided[g,t] if add_flexi_ramp_reserve else 0.) \
+    #                  + ((m.TimePeriodLengthMinutes/m.SupplementalReserveMinutes)*(m.SupplementalSpinReserveDispatched[g,t]+m.SupplementalSpinReserveDispatched[g,t-1])/2. if add_supplemental_reserve else 0.) \
+    #               <= \
+    #                 (m.AS_ScaledNominalRampUpLimit[g] + m.MinimumPowerOutput[g,t-1] - m.MinimumPowerOutput[g,t])*m.UnitOn[g,t] + \
+    # 		    (m.AS_ScaledStartupRamp[g,t] - m.MinimumPowerOutput[g,t-1] - m.AS_ScaledNominalRampUpLimit[g])*m.UnitStart[g,t]
+    # model.AncillaryServiceRampUpLimit = Constraint(model.ThermalGenerators, model.TimePeriods, rule=ancillary_service_ramp_up_limit)
+    #
+    # ## NOTE: for the regulation and flexible down services, these subtract from power generated at t, so they get added here
+    # def ancillary_service_ramp_dn_limit(m,g,t):
+    #     if not (bool(m.flexible_ramping) or bool(m.regulation_service)):
+    #         return Constraint.Feasible
+    #     reg = (bool(m.regulation_service) and (g in m.AGC_Generators))
+    #     if t == m.InitialTime:
+    #         if not m.enforce_t1_ramp_rates:
+    #             return Constraint.Skip
+    #         else:
+    #             return m.PowerGeneratedT0[g] - m.PowerGeneratedAboveMinimum[g, t] \
+    #                       + ((m.TimePeriodLengthMinutes/m.RegulationMinutes)*m.RegulationReserveDn[g,t] if reg else 0.) \
+    #                       + ((m.TimePeriodLengthMinutes/m.FlexRampMinutes)*m.FlexDnProvided[g,t] if add_flexi_ramp_reserve else 0.) \
+    #                    <= \
+    #                      (m.AS_ScaledNominalRampDownLimit[g] + m.MinimumPowerOutput[g,t] - 0)*m.UnitOnT0[g] + \
+    #                      (m.AS_ScaledShutdownRampT0[g] - m.MinimumPowerOutput[g,t] - m.AS_ScaledNominalRampDownLimit[g])*m.UnitStop[g,t]
+    #     else:
+    #         return m.PowerGeneratedAboveMinimum[g, t-1] - m.PowerGeneratedAboveMinimum[g, t] \
+    #                  + ((m.TimePeriodLengthMinutes/m.RegulationMinutes)*(m.RegulationReserveDn[g,t]+m.RegulationReserveDn[g,t-1])/2. if reg else 0.) \
+    #                  + ((m.TimePeriodLengthMinutes/m.FlexRampMinutes)*m.FlexDnProvided[g,t] if add_flexi_ramp_reserve else 0.) \
+    #               <= \
+    #                 (m.AS_ScaledNominalRampDownLimit[g] + m.MinimumPowerOutput[g,t] - m.MinimumPowerOutput[g,t-1])*m.UnitOn[g,t-1] + \
+    #                 (m.AS_ScaledShutdownRamp[g,t-1] - m.MinimumPowerOutput[g,t] - m.AS_ScaledNominalRampDownLimit[g])*m.UnitStop[g,t]
+    # model.AncillaryServiceRampDnLimit = Constraint(model.ThermalGenerators, model.TimePeriods, rule=ancillary_service_ramp_dn_limit)
 
-    ##TODO: FIXME: REVISIT AFTER RAMPING CONSTRAINTS
-    def as_startup_ramp(m,g,t):
-        return (m.StartupRampLimit[g,t] - m.MinimumPowerOutput[g,t])*m.TimePeriodLengthHours + m.MinimumPowerOutput[g,t]
-    model.AS_ScaledStartupRamp = Param(model.ThermalGenerators, model.TimePeriods, within=NonNegativeReals, initialize=as_startup_ramp)
 
-    def as_shutdown_ramp(m,g,t):
-        return (m.ShutdownRampLimit[g,t] - m.MinimumPowerOutput[g,t])*m.TimePeriodLengthHours + m.MinimumPowerOutput[g,t]
-    model.AS_ScaledShutdownRamp = Param(model.ThermalGenerators, model.TimePeriods, within=NonNegativeReals, initialize=as_shutdown_ramp)
-
-    def as_shutdown_ramp_t0(m,g):
-        return (m.ShutdownRampLimitT0[g] - m.MinimumPowerOutputT0[g])*m.TimePeriodLengthHours + m.MinimumPowerOutputT0[g]
-    model.AS_ScaledShutdownRampT0 = Param(model.ThermalGenerators, within=NonNegativeReals, initialize=as_shutdown_ramp_t0)
-
-    ## These are formulated similarly to the damci-kurt ramp limits
-    def ancillary_service_ramp_up_limit(m,g,t):
-        reg = (bool(m.regulation_service) and (g in m.AGC_Generators))
-        if t == m.InitialTime:
-            return m.MaximumPowerAvailableAboveMinimum[g, t] - m.PowerGeneratedT0[g]\
-                     + ((m.TimePeriodLengthMinutes/m.RegulationMinutes)*m.RegulationReserveUp[g,t] if reg else 0.) \
-                     + ((m.TimePeriodLengthMinutes/m.SpinningReserveMinutes)*m.SpinningReserveDispatched[g,t] if add_spinning_reserve else 0.) \
-                     + ((m.TimePeriodLengthMinutes/m.FlexRampMinutes)*m.FlexUpProvided[g,t] if add_flexi_ramp_reserve else 0.) \
-                     + ((m.TimePeriodLengthMinutes/m.SupplementalReserveMinutes)*m.SupplementalSpinReserveDispatched[g,t] if add_supplemental_reserve else 0.) \
-                  <= \
-                    (m.AS_ScaledNominalRampUpLimit[g] + 0 - m.MinimumPowerOutput[g,t])*m.UnitOn[g,t] + \
-    		    (m.AS_ScaledStartupRamp[g,t] - 0 - m.AS_ScaledNominalRampUpLimit[g])*m.UnitStart[g,t] 
-        else: ## average the regulation and spin over the two time periods, which is what is done in CAISO
-            return m.MaximumPowerAvailableAboveMinimum[g, t] - m.PowerGeneratedAboveMinimum[g, t-1] \
-                     + ((m.TimePeriodLengthMinutes/m.RegulationMinutes)*(m.RegulationReserveUp[g,t]+m.RegulationReserveUp[g,t-1])/2. if reg else 0.) \
-                     + ((m.TimePeriodLengthMinutes/m.SpinningReserveMinutes)*(m.SpinningReserveDispatched[g,t]+m.SpinningReserveDispatched[g,t-1])/2. if add_spinning_reserve else 0.) \
-                     + ((m.TimePeriodLengthMinutes/m.FlexRampMinutes)*m.FlexUpProvided[g,t] if add_flexi_ramp_reserve else 0.) \
-                     + ((m.TimePeriodLengthMinutes/m.SupplementalReserveMinutes)*(m.SupplementalSpinReserveDispatched[g,t]+m.SupplementalSpinReserveDispatched[g,t-1])/2. if add_supplemental_reserve else 0.) \
-                  <= \
-                    (m.AS_ScaledNominalRampUpLimit[g] + m.MinimumPowerOutput[g,t-1] - m.MinimumPowerOutput[g,t])*m.UnitOn[g,t] + \
-    		    (m.AS_ScaledStartupRamp[g,t] - m.MinimumPowerOutput[g,t-1] - m.AS_ScaledNominalRampUpLimit[g])*m.UnitStart[g,t] 
-    model.AncillaryServiceRampUpLimit = Constraint(model.ThermalGenerators, model.TimePeriods, rule=ancillary_service_ramp_up_limit)
-
-    ## NOTE: for the regulation and flexible down services, these subtract from power generated at t, so they get added here
-    def ancillary_service_ramp_dn_limit(m,g,t):
-        if not (bool(m.flexible_ramping) or bool(m.regulation_service)):
-            return Constraint.Feasible
-        reg = (bool(m.regulation_service) and (g in m.AGC_Generators))
-        if t == m.InitialTime:
-            if not m.enforce_t1_ramp_rates:
-                return Constraint.Skip
-            else:
-                return m.PowerGeneratedT0[g] - m.PowerGeneratedAboveMinimum[g, t] \
-                          + ((m.TimePeriodLengthMinutes/m.RegulationMinutes)*m.RegulationReserveDn[g,t] if reg else 0.) \
-                          + ((m.TimePeriodLengthMinutes/m.FlexRampMinutes)*m.FlexDnProvided[g,t] if add_flexi_ramp_reserve else 0.) \
-                       <= \
-                         (m.AS_ScaledNominalRampDownLimit[g] + m.MinimumPowerOutput[g,t] - 0)*m.UnitOnT0[g] + \
-                         (m.AS_ScaledShutdownRampT0[g] - m.MinimumPowerOutput[g,t] - m.AS_ScaledNominalRampDownLimit[g])*m.UnitStop[g,t]
-        else:
-            return m.PowerGeneratedAboveMinimum[g, t-1] - m.PowerGeneratedAboveMinimum[g, t] \
-                     + ((m.TimePeriodLengthMinutes/m.RegulationMinutes)*(m.RegulationReserveDn[g,t]+m.RegulationReserveDn[g,t-1])/2. if reg else 0.) \
-                     + ((m.TimePeriodLengthMinutes/m.FlexRampMinutes)*m.FlexDnProvided[g,t] if add_flexi_ramp_reserve else 0.) \
-                  <= \
-                    (m.AS_ScaledNominalRampDownLimit[g] + m.MinimumPowerOutput[g,t] - m.MinimumPowerOutput[g,t-1])*m.UnitOn[g,t-1] + \
-                    (m.AS_ScaledShutdownRamp[g,t-1] - m.MinimumPowerOutput[g,t] - m.AS_ScaledNominalRampDownLimit[g])*m.UnitStop[g,t]
-    model.AncillaryServiceRampDnLimit = Constraint(model.ThermalGenerators, model.TimePeriods, rule=ancillary_service_ramp_dn_limit)
-
+#Add a new reserve type here named frequency_services.
+#I would copy and paste the function from spinning_reserves to get started.
 
 @add_model_attr('regulation_service', requires = {'data_loader': None,
                                                   'status_vars': None,

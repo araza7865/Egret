@@ -135,6 +135,7 @@ def basic_objective(model):
             cc += sum(m.LoadMismatchCostReactive[t] for t in m.GenerationTimeInStage[st])
         if m.security_constraints:
             cc += sum(m.SecurityConstraintViolationCost[t] for t in m.GenerationTimeInStage[st])
+        #We will need to include a penalty cost for frequency reserve constraints.
         if m.regulation_service:
             cc += sum(m.RegulationCostGeneration[g,t] for g in m.AGC_Generators for t in m.GenerationTimeInStage[st]) \
                 + sum(m.RegulationCostPenalty[t] for t in m.GenerationTimeInStage[st])

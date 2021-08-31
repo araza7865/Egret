@@ -1004,6 +1004,7 @@ def _save_uc_results(m, relaxed):
     data_time_periods = md.data['system']['time_keys']
     reserve_requirement = ('reserve_requirement' in md.data['system'])
 
+    frequency = bool(m.frequency_service)
     regulation = bool(m.regulation_service)
     spin = bool(m.spinning_reserve)
     nspin = bool(m.non_spinning_reserve)
@@ -1057,6 +1058,8 @@ def _save_uc_results(m, relaxed):
             reg_prov = _preallocated_list(data_time_periods)
             reg_up_supp = _preallocated_list(data_time_periods)
             reg_dn_supp = _preallocated_list(data_time_periods)
+        if frequency:
+            PFR_supp = _preallocated_list(data_time_periods)
         if spin:
             spin_supp = _preallocated_list(data_time_periods)
         if nspin:
@@ -1092,6 +1095,10 @@ def _save_uc_results(m, relaxed):
             else:
                 commitment_cost_dict[dt] += value(m.NoLoadCost[g,mt]+m.StartupCost[g,mt])
                 production_cost_dict[dt] = value(m.ProductionCost[g,mt])
+
+            if frequency:
+                PFR_supp[dt] = value(m.PFRReserveDispatched[g,mt])#Assuming this is the name of the variable created for PFR reserve
+                production_cost_dict[dt] += value(m.PFRReserveCostGeneration[g,mt])#Assuming this is the name of the variable created for PFR reserve cost
 
             if regulation:
                 if g in m.AGC_Generators:
@@ -1147,6 +1154,8 @@ def _save_uc_results(m, relaxed):
         g_dict['commitment'] = _time_series_dict(commitment_dict)
         g_dict['commitment_cost'] = _time_series_dict(commitment_cost_dict)
         g_dict['production_cost'] = _time_series_dict(production_cost_dict)
+        if frequency:
+            g_dict['PFR_supplied'] = _time_series_dict(PFR_supp)#This line will save the PFR reserve supplied to the model data structure
         if regulation:
             g_dict['reg_provider'] = _time_series_dict(reg_prov)
             g_dict['reg_up_supplied'] = _time_series_dict(reg_up_supp)
@@ -1433,6 +1442,9 @@ def _save_uc_results(m, relaxed):
     ## as we add more zonal reserve products, they can be added here
     _zonal_reserve_map = dict()
     _system_reserve_map = dict()
+
+    #We may want to include one of these for the frequency_reserve_requirement
+
     if spin:
         _zonal_reserve_map['spinning_reserve_requirement'] = {'shortfall' : 'spinning_reserve_shortfall',
                                                               'price'     : 'spinning_reserve_price',
@@ -1626,6 +1638,8 @@ def solve_unit_commitment(model_data,
 
     m, results, solver = _solve_unit_commitment(m, solver, mipgap, timelimit, solver_tee, symbolic_solver_labels, solver_options, solve_method_options,relaxed )
 
+    #The results are now in a Pyomo model m.  The following function places these results into an Egret model data structure md
+
     md = _save_uc_results(m, relaxed)
     
     if return_model and return_results:
@@ -1639,13 +1653,23 @@ def solve_unit_commitment(model_data,
 if __name__ == '__main__':
     from egret.data.model_data import ModelData
 
-    #hi
-
-    # filen = "tests/uc_test_instances/tiny_uc_tc_2.json"
-    # md = ModelData.read(filen)
-    # md_results = solve_unit_commitment(md, "cbc")
-
-
     filen = 'RTS_GMLC_08_03_to_08_04.json'
     md = ModelData.read(filen)
+
+    # #set the reserve requirement $L$ for PFR and FFR reserve
+    # md.data['system']['frequency_reserve_requirement']={'data_type': 'time_series', 'values': [2500 for t in range(len(md.data['system']['time_keys']))]}
+    #
+    # #specify the data points for the curve that is peicwise linearized.
+    # md.data['system']['PFR_reserve_limit_curve']=[]
+    # CurveApprox=[0,0.1,0.2,0.4,1,2,5]
+    # for inertia in [150,200,250,300,350]:
+    #     for FFR in [0,100,200,300,400,500,600]:
+    #         md.data['system']['PFR_reserve_limit_curve']+=[[inertia,FFR,(inertia/250)*CurveApprox[int(FFR/100)]]]
+    #
+    # #set the offset and scaling factor for each generators' cuve
+    # for (g,g_dict) in md.data['elements']['generator'].items():
+    #     g_dict['PFR_offset']=75
+    #     g_dict['PFR_scale']=1
+    #     g_dict['PFR_max']=10
+
     md_results = solve_unit_commitment(md, "gurobi")
