@@ -1097,8 +1097,9 @@ def _save_uc_results(m, relaxed):
                 production_cost_dict[dt] = value(m.ProductionCost[g,mt])
 
             if frequency:
-                PFR_supp[dt] = value(m.FrequencyReserveDispatched[g,mt])#Assuming this is the name of the variable created for PFR reserve
-                production_cost_dict[dt] += value(m.FrequencyReserveCostGeneration[g,mt])#Assuming this is the name of the variable created for PFR reserve cost
+                PFR_supp[dt] = value(m.PFRReserveDispatched[g,mt])#Assuming this is the name of the variable created for PFR reserve
+                #FFR_supp[dt] = value(m.FFRReserveDispatched[g,mt])
+                production_cost_dict[dt] += value(m.PFRReserveCostGeneration[g,mt])#Assuming this is the name of the variable created for PFR reserve cost
 
             if regulation:
                 if g in m.AGC_Generators:
@@ -1670,6 +1671,10 @@ if __name__ == '__main__':
     for (g,g_dict) in md.data['elements']['generator'].items():
         g_dict['PFR_offset']=75
         g_dict['PFR_scale']=1
-        g_dict['PFR_max']=10
+        g_dict['PFR_capacity']=10
+        g_dict['PFR_price']=0
+        g_dict['FFR_capacity']=0
+        g_dict['FFR_price']=0
+
 
     md_results = solve_unit_commitment(md, "gurobi")
