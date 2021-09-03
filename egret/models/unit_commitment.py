@@ -1097,8 +1097,8 @@ def _save_uc_results(m, relaxed):
                 production_cost_dict[dt] = value(m.ProductionCost[g,mt])
 
             if frequency:
-                PFR_supp[dt] = value(m.PFRReserveDispatched[g,mt])#Assuming this is the name of the variable created for PFR reserve
-                production_cost_dict[dt] += value(m.PFRReserveCostGeneration[g,mt])#Assuming this is the name of the variable created for PFR reserve cost
+                PFR_supp[dt] = value(m.FrequencyReserveDispatched[g,mt])#Assuming this is the name of the variable created for PFR reserve
+                production_cost_dict[dt] += value(m.FrequencyReserveCostGeneration[g,mt])#Assuming this is the name of the variable created for PFR reserve cost
 
             if regulation:
                 if g in m.AGC_Generators:
@@ -1656,20 +1656,20 @@ if __name__ == '__main__':
     filen = 'RTS_GMLC_08_03_to_08_04.json'
     md = ModelData.read(filen)
 
-    # #set the reserve requirement $L$ for PFR and FFR reserve
-    # md.data['system']['frequency_reserve_requirement']={'data_type': 'time_series', 'values': [2500 for t in range(len(md.data['system']['time_keys']))]}
+    #set the reserve requirement $L$ for PFR and FFR reserve
+    md.data['system']['frequency_reserve_requirement']={'data_type': 'time_series', 'values': [2500 for t in range(len(md.data['system']['time_keys']))]}
     #
-    # #specify the data points for the curve that is peicwise linearized.
-    # md.data['system']['PFR_reserve_limit_curve']=[]
-    # CurveApprox=[0,0.1,0.2,0.4,1,2,5]
-    # for inertia in [150,200,250,300,350]:
-    #     for FFR in [0,100,200,300,400,500,600]:
-    #         md.data['system']['PFR_reserve_limit_curve']+=[[inertia,FFR,(inertia/250)*CurveApprox[int(FFR/100)]]]
+    #specify the data points for the curve that is peicwise linearized.
+    md.data['system']['PFR_reserve_limit_curve']=[]
+    CurveApprox=[0,0.1,0.2,0.4,1,2,5]
+    for inertia in [150,200,250,300,350]:
+        for FFR in [0,100,200,300,400,500,600]:
+            md.data['system']['PFR_reserve_limit_curve']+=[[inertia,FFR,(inertia/250)*CurveApprox[int(FFR/100)]]]
     #
-    # #set the offset and scaling factor for each generators' cuve
-    # for (g,g_dict) in md.data['elements']['generator'].items():
-    #     g_dict['PFR_offset']=75
-    #     g_dict['PFR_scale']=1
-    #     g_dict['PFR_max']=10
+    #set the offset and scaling factor for each generators' cuve
+    for (g,g_dict) in md.data['elements']['generator'].items():
+        g_dict['PFR_offset']=75
+        g_dict['PFR_scale']=1
+        g_dict['PFR_max']=10
 
     md_results = solve_unit_commitment(md, "gurobi")

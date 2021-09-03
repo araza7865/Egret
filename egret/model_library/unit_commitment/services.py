@@ -346,8 +346,9 @@ def ancillary_services(model):
     ## these need to be added by high-quality to low-quality,
     ## except flexiramp which is it's own thing
     if add_frequency_reserve:
-        frequency_services(model, zone_initializer_builder, zone_requirement_getter, gens_in_reserve_zone_getter) #add this function below
+        frequency_services(model, zone_initializer_builder, zone_requirement_getter, gens_in_reserve_zone_getter, thermal_gen_attrs) #add this function below
     else:
+        print("we are missing this!!!!")
         model.frequency_service = None
 
     if add_regulation_reserve:
@@ -380,7 +381,7 @@ def ancillary_services(model):
     def ancillary_service_capacity_limit_upper(m, g, t):
         reg = (bool(m.regulation_service) and (g in m.AGC_Generators))
         return m.MaximumPowerAvailable[g,t] \
-                    + (m.PFRProvided[g,t] if add_frequency_reserve else 0.) \
+                    + (m.FrequencyReserveDispatched[g,t] if add_frequency_reserve else 0.) \
                     + (m.FlexUpProvided[g,t] if add_flexi_ramp_reserve else 0.) \
                     + (m.RegulationReserveUp[g,t] if reg else 0.) \
                     + (m.SpinningReserveDispatched[g,t] if add_spinning_reserve else 0.) \
@@ -476,9 +477,6 @@ def ancillary_services(model):
     #                 (m.AS_ScaledShutdownRamp[g,t-1] - m.MinimumPowerOutput[g,t] - m.AS_ScaledNominalRampDownLimit[g])*m.UnitStop[g,t]
     # model.AncillaryServiceRampDnLimit = Constraint(model.ThermalGenerators, model.TimePeriods, rule=ancillary_service_ramp_dn_limit)
 
-
-#Add a new reserve type here named frequency_services.
-#I would copy and paste the function from spinning_reserves to get started.
 
 @add_model_attr('regulation_service', requires = {'data_loader': None,
                                                   'status_vars': None,
@@ -649,6 +647,111 @@ def regulation_services(model, zone_initializer_builder, zone_requirement_getter
     model.RegulationCostPenalty = Expression(model.TimePeriods, rule=regulation_cost_slacks)
 
     ## end regulation_services
+
+
+#Add a new reserve type here named frequency_services.
+#I would copy and paste the function from spinning_reserves to get started.
+@add_model_attr('frequency_service', requires = {'data_loader': None,
+                                                'status_vars': None,
+                                               })
+
+def frequency_services(model, zone_initializer_builder, zone_requirement_getter, gens_in_reserve_zone_getter, thermal_gen_attrs):
+
+    md = model.model_data
+
+    system = md.data['system']
+
+    TimeMapper = uc_time_helper(model.TimePeriods)
+
+    def _check_freq(e_dict):
+        return 'frequency_reserve_requirement' in e_dict
+
+    model.FrequencyReserveZones = Set(initialize=zone_initializer_builder(_check_freq))
+
+    model.ThermalGeneratorsInFrequencyReserveZone = Set(model.FrequencyReserveZones,
+                                                       initialize=gens_in_reserve_zone_getter())
+
+    ## Include FFR reserve as a type of reserve for thermal generators
+    ## Place limits i.e. max_ffr = [0]
+    ## "use thermal generators to represent something else"
+    ## e.g. to represent a wind generator/load producing FFR
+
+    ## begin frequency reserve
+
+    # frequency reserve response time
+    model.FrequencyReserveMinutes = Param(within=PositiveReals, default=5.)  # in minutes, varies among ISOs
+
+    # limit,  cost of frequency reserves
+    model.FrequencyReserveCapability = Param(model.ThermalGenerators, model.TimePeriods, within=NonNegativeReals,
+                                          default=float('inf'),
+                                            initialize=TimeMapper(thermal_gen_attrs.get('frequency_capacity', dict())))
+    model.FrequencyReservePrice = Param(model.ThermalGenerators, model.TimePeriods, within=NonNegativeReals, default=0.0,
+                                       initialize=TimeMapper(thermal_gen_attrs.get('frequency_cost', dict())))
+
+    # frequency reserve requirements
+    model.SystemFrequencyReserveRequirement = Param(model.TimePeriods, within=NonNegativeReals, default=0.0,
+                                                   initialize=TimeMapper(
+                                                       system.get('frequency_reserve_requirement', dict())))
+
+    def system_frequency_bounds(m, t):
+        return (0, m.SystemFrequencyReserveRequirement[t])
+
+    model.SystemFrequencyReserveShortfall = Var(model.TimePeriods, within=NonNegativeReals, bounds=system_frequency_bounds)
+
+    # frequency reserve
+    def frequency_bounds(m, g, t):
+        return (0, m.FrequencyReserveCapability[g, t])
+
+    model.FrequencyReserveDispatched = Var(model.ThermalGenerators, model.TimePeriods, within=NonNegativeReals,
+                                          bounds=frequency_bounds)
+
+    freq_reserves = bool(model.frequency_service)
+
+    def frequency_reserve_available(m, g, t):
+        spin_limit = min(value(m.FrequencyReserveCapability[g, t]),
+                         value(m.NominalRampUpLimit[g] / 60. * m.FrequencyReserveMinutes))
+        if freq_reserves:
+            return m.FrequencyReserveDispatched[g, t] <= spin_limit * m.UnitOn[g, t]
+        else:
+            return m.FrequencyReserveDispatched[g, t] <= spin_limit * m.UnitOn[g, t]
+
+    model.FrequencyReserveAvailableConstr = Constraint(model.ThermalGenerators, model.TimePeriods,
+                                                      rule=frequency_reserve_available)
+
+
+    def system_frequency_reserve_provided(m, t):
+        return sum(m.FrequencyReserveDispatched[g, t] for g in m.ThermalGenerators) \
+               + sum(m.ZonalFrequencyReserveShortfall[rz, t] for rz in m.FrequencyReserveZones) \
+               + m.SystemFrequencyReserveShortfall[t]
+
+    model.SystemFrequencyReserveProvided = Expression(model.TimePeriods, rule=system_frequency_reserve_provided)
+
+    def enforce_system_frequency_reserve_requirement(m, t):
+        if freq_reserves:
+            return m.SystemFrequencyReserveProvided[t]  \
+                   >= m.SystemFrequencyReserveRequirement[t]
+        else:
+            return m.SystemfrequencyReserveProvided[t] >= m.SystemFrequencyReserveRequirement[t]
+
+    model.EnforceSystemFrequencyReserveRequirement = Constraint(model.TimePeriods,
+                                                               rule=enforce_system_frequency_reserve_requirement)
+
+    def compute_frequency_reserve_cost(m, g, t):
+        return m.FrequencyReserveDispatched[g, t] * m.FrequencyReservePrice[g, t] * m.TimePeriodLengthHours
+
+    model.FrequencyReserveCostGeneration = Expression(model.ThermalGenerators, model.TimePeriods,
+                                                     rule=compute_frequency_reserve_cost)
+
+    def frequency_reserve_cost_slacks(m, t):
+        return m.TimePeriodLengthHours * m.FrequencyReservePenalty * (
+                m.SystemFrequencyReserveShortfall[t] \
+                + sum(m.ZonalFrequencyReserveShortfall[rz, t] for rz in m.FrequencyReserveZones)
+        )
+
+    model.FrequencyReserveCostPenalty = Expression(model.TimePeriods, rule=frequency_reserve_cost_slacks)
+
+    ## end frequency reserves
+
 
 @add_model_attr('spinning_reserve', requires = {'data_loader': None,
                                                 'status_vars': None,
