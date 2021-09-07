@@ -348,7 +348,7 @@ def ancillary_services(model):
     if add_frequency_reserve:
         frequency_services(model, zone_initializer_builder, zone_requirement_getter, gens_in_reserve_zone_getter, thermal_gen_attrs) #add this function below
     else:
-        print("we are missing this!!!!")
+
         model.frequency_service = None
 
     if add_regulation_reserve:
@@ -688,37 +688,6 @@ def frequency_services(model, zone_initializer_builder, zone_requirement_getter,
     model.FFRReservePrice = Param(model.ThermalGenerators, model.TimePeriods, within=NonNegativeReals, default=0.0,
                                        initialize=TimeMapper(thermal_gen_attrs.get('FFR_price', dict())))
 
-    # system-wide frequency reserve requirements -- split into PFR and FFR
-    model.SystemPFRReserveRequirement = Param(model.TimePeriods, within=NonNegativeReals, default=0.0,
-                                                   initialize=TimeMapper(
-                                                       system.get('PFR_reserve_requirement', dict())))
-
-    # Technically there is no system FFR requirement, but there is a joint PFR and FFR requirement
-    # This is here if/when an FFR requirement is imposed
-    model.SystemFFRReserveRequirement = Param(model.TimePeriods, within=NonNegativeReals, default=0.0,
-                                              initialize=TimeMapper(
-                                                  system.get('FFR_reserve_requirement', dict())))
-
-    # system-wide frequency reserve requirements -- split into PFR and FFR
-    # Technically there is no system FFR requirement, but there is a joint PFR and FFR requirement
-    # This is here if/when an FFR requirement is imposed
-    def system_PFR_bounds(m, t):
-        return (0, m.SystemPFRReserveRequirement[t])
-
-    def system_FFR_bounds(m,t):
-        return(0, m.SystemFFRReserveRequirement[t])
-
-    def system_frequency_bounds(m,t):
-        return(0,m.SystemPFRReserveRequirement[t] + m.SystemFFRReserveRequirement[t])
-
-    # system-wide frequency reserve shortfall -- split into PFR and FFR
-    # Technically there is no system FFR shortfall, but there is a joint PFR and FFR requirement
-    # This is here if/when an FFR shortfall is imposed
-    model.SystemPFRReserveShortfall = Var(model.TimePeriods, within=NonNegativeReals, bounds=system_PFR_bounds)
-    model.SystemFFRReserveShortfall = Var(model.TimePeriods, within = NonNegativeReals, bounds=system_FFR_bounds)
-    model.SystemFrequencyReserveShortfall = Var(model.TimePeriods, within=NonNegativeReals,
-                                                        bounds=system_frequency_bounds)
-
     # PFR reserve
     def PFR_bounds(m, g, t):
         return (0, m.PFRReserveCapability[g, t])
@@ -737,15 +706,39 @@ def frequency_services(model, zone_initializer_builder, zone_requirement_getter,
 
     model.FrequencyReserveDispatched = Var(model.ThermalGenerators, model.TimePeriods, within=NonNegativeReals,
                                             bounds=frequency_bounds)
+    def system_PFR_reserve_provided(m, t):
+        return sum(m.PFRReserveDispatched[g, t] for g in m.ThermalGenerators)
 
+    model.SystemPFRReserveProvided = Expression(model.TimePeriods, rule=system_PFR_reserve_provided)
+
+    def system_FFR_reserve_provided(m, t):
+        return sum(m.FFRReserveDispatched[g, t] for g in m.ThermalGenerators)
+
+    model.SystemFFRReserveProvided = Expression(model.TimePeriods, rule=system_FFR_reserve_provided)
 
     freq_reserves = bool(model.frequency_service)
 
+
+    #need M and b at this point in time
+    #hardcoding base example from uc.py
+
+
+
+    #Temporarily hardcoded PFR reserve limit of each generator at 100 for each time period
     def PFR_reserve_available(m, g, t):
+        #Just hardcoding a random operating point from here
+        FFR = [0, 100, 200, 300, 400, 500, 600]
+        inertia = [150, 200, 250, 300, 350]
+        CurveApprox = [0, 0.1, 0.2, 0.4, 1, 2, 5]
+
+        operating_point = (inertia[int(value(m.PFRReserveCapability[g, t]) % 7)]/250)*CurveApprox[int(int(FFR[3+int(value(m.NominalRampUpLimit[g]) % 6)]) / 100)]
+
+        print(operating_point)
+
         spin_limit = min(value(m.PFRReserveCapability[g, t]),
                          value(m.NominalRampUpLimit[g] / 60. * m.PFRReserveMinutes))
         if freq_reserves:
-            return m.PFRReserveDispatched[g, t] <= spin_limit * m.UnitOn[g, t]
+            return m.PFRReserveDispatched[g, t] <= 25* operating_point * m.UnitOn[g,t]
         else:
             return m.PFRReserveDispatched[g, t] <= spin_limit * m.UnitOn[g, t]
 
@@ -754,22 +747,15 @@ def frequency_services(model, zone_initializer_builder, zone_requirement_getter,
 
     ## (KS) Need to model constraints (9) and (10) from extant model here
 
-    def system_PFR_reserve_provided(m, t):
-        return sum(m.PFRReserveDispatched[g, t] for g in m.ThermalGenerators) \
-               + m.SystemPFRReserveShortfall[t]
 
-    model.SystemPFRReserveProvided = Expression(model.TimePeriods, rule=system_PFR_reserve_provided)
 
-    def system_FFR_reserve_provided(m, t):
-        return sum(m.FFRReserveDispatched[g, t] for g in m.ThermalGenerators) \
-               + m.SystemFFRReserveShortfall[t]
 
-    model.SystemFFRReserveProvided = Expression(model.TimePeriods, rule=system_PFR_reserve_provided)
+    model.SystemFrequencyReserveRequirement = Param(model.TimePeriods, within=NonNegativeReals, default=0.0, initialize=TimeMapper(system.get('frequency_reserve_requirement', dict())))
 
     def enforce_system_frequency_reserve_requirement(m, t):
         if freq_reserves:
-            return m.SystemPFRReserveProvided[t]  + m.SystemFFRReserveProvided[t] \
-                   >= m.SystemPFRReserveRequirement[t] + m.SystemFFRReserveRequirement[t]
+            return m.SystemPFRReserveProvided[t] + m.SystemFFRReserveProvided[t] \
+                   >= m.SystemFrequencyReserveRequirement[t]
         else:
             return m.SystemPFRReserveProvided[t] >= m.SystemPFRReserveRequirement[t]
 
@@ -796,7 +782,7 @@ def frequency_services(model, zone_initializer_builder, zone_requirement_getter,
     model.FrequencyReserveCostGeneration = Expression(model.ThermalGenerators, model.TimePeriods,
                                                      rule=compute_frequency_reserve_cost)
 
-    ## (KS) Ignoring costs for the moment
+    ## (KS) Ignoring cost slacks for the moment
     '''
     def PFR_reserve_cost_slacks(m, t):
         return m.TimePeriodLengthHours * m.PFRReservePenalty * (
