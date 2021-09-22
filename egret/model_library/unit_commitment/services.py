@@ -9,7 +9,10 @@
 
 ## file for all the ancillary services
 from pyomo.environ import *
-import math
+from pyomo.core.kernel.piecewise_library import *
+import numpy as np
+import sys
+
 
 from .uc_utils import add_model_attr, uc_time_helper 
 from .status_vars import _is_relaxed
@@ -716,29 +719,87 @@ def frequency_services(model, zone_initializer_builder, zone_requirement_getter,
 
     model.SystemFFRReserveProvided = Expression(model.TimePeriods, rule=system_FFR_reserve_provided)
 
+
+    def system_FFR_bounds(m,t):
+        #this will throw an error with Qhull later if ever system FFR reserve capability is 0
+        #print(0, sum(m.FFRReserveCapability[g,t] for g in m.ThermalGenerators))
+        #sys.exit()
+        return (0, sum(m.FFRReserveCapability[g,t] for g in m.ThermalGenerators))
+
+    model.SystemFFRDispatched = Var(model.TimePeriods, within=NonNegativeReals,bounds=system_FFR_bounds, initialize = None)
+
+    def system_FFR_Dispatched(m,t):
+        return m.SystemFFRDispatched[t] == sum(m.FFRReserveDispatched[g, t] for g in m.ThermalGenerators)
+
+    model.EnforceSystemFFRDispatch = Constraint(model.TimePeriods, rule=system_FFR_Dispatched)
+
     freq_reserves = bool(model.frequency_service)
 
 
     #need M and b at this point in time
     #hardcoding base example from uc.py
 
+    def system_inertia_bounds(m,t):
+        return (0,500)
 
+    model.SystemInertia = Var(model.TimePeriods, within=NonNegativeReals, bounds=system_inertia_bounds, initialize = None)
+
+    model.SystemPFRCurve = Var(within=NonNegativeReals)
+
+    def _get_piecewise_block(t):
+        def piecewise_block(block):
+            m = block.parent_block()
+            piecewise_triangulation = util.generate_delaunay([m.SystemFFRDispatched[t], m.SystemInertia[t]], num=11,
+                                                             qhull_options="Qbb Qc Qz Q12")
+            values = np.array([i for i in range(1, 101)])
+            piecewise_func = transforms_nd.piecewise_nd(piecewise_triangulation, values,
+                                                          input=[m.SystemFFRDispatched[t], m.SystemInertia[t]],
+                                                          output=m.SystemPFRCurve)
+            return piecewise_func
+        return piecewise_block
+
+    model.PiecewiseBlock = Block(model.TimePeriods, concrete=True)
+
+    for tm in model.TimePeriods:
+        b = model.PiecewiseBlock[tm]
+        b.piecewise_func = Expression(model.TimePeriods, rule=_get_piecewise_block(tm))
+
+    #sys.exit()
 
     #Temporarily hardcoded PFR reserve limit of each generator at 100 for each time period
     def PFR_reserve_available(m, g, t):
-        #Just hardcoding a random operating point from here
-        FFR = [0, 100, 200, 300, 400, 500, 600]
-        inertia = [150, 200, 250, 300, 350]
-        CurveApprox = [0, 0.1, 0.2, 0.4, 1, 2, 5]
 
-        operating_point = (inertia[int(value(m.PFRReserveCapability[g, t]) % 7)]/250)*CurveApprox[int(int(FFR[3+int(value(m.NominalRampUpLimit[g]) % 6)]) / 100)]
 
-        print(operating_point)
 
+        #piecewise_triangulation = util.generate_delaunay([m.SystemFFRDispatched[t], m.SystemInertia[t]], num=11, qhull_options = "Qbb Qc Qz Q12")
+        #values = np.array([i for i in range(1,101)])
+        #m.piecewise_func = transforms_nd.piecewise_nd(piecewise_triangulation,values, input = [m.SystemFFRDispatched[t], m.SystemInertia[t]], output = m.SystemPFRCurve)
+        #print(type(piecewise_triangulation))
+        #print(piecewise_triangulation.simplices)
+        #print(x for x in piecewise_block.items)
+        #print(type(m.piecewise_func))
+        #print(x for x in pyomo.core.expr.current.identify_variables(m.piecewise_func.input))
+        #piecewise_block.write("what_is_this.lp")
+        #print(type(m.piecewise_func.input))
+        #print(type(m.piecewise_func.output))
+        #print([pyomo.core.expr.current.expression_to_string(x) for x in m.piecewise_func.input])
+        #print(pyomo.core.expr.current.expression_to_string(m.piecewise_func.output))
+        #print(piecewise_block.triangulation.simplices)
+        #print(type(m.piecewise_func.values))
+        #print(m.piecewise_func.values)
+        #print(m.piecewise_func([111,257]))
+        #print("ok")
+        #print(m.piecewise_func.items)
+        #print(isinstance(m.piecewise_func,transforms_nd.TransformedPiecewiseLinearFunctionND))
+        #print(list(m.piecewise_func.v))
+        #print(list(m.piecewise_func.c))
+        #print("ok?")
+        #print(m.piecewise_func([m.SystemFFRDispatched[t], m.SystemInertia[t]]))
+        #sys.exit()
         spin_limit = min(value(m.PFRReserveCapability[g, t]),
                          value(m.NominalRampUpLimit[g] / 60. * m.PFRReserveMinutes))
         if freq_reserves:
-            return m.PFRReserveDispatched[g, t] <= 25* operating_point * m.UnitOn[g,t]
+            return m.PFRReserveDispatched[g, t] <= 25 * m.PiecewiseBlock[t].piecewise_func * m.UnitOn[g,t]
         else:
             return m.PFRReserveDispatched[g, t] <= spin_limit * m.UnitOn[g, t]
 

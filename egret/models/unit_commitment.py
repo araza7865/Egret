@@ -1668,6 +1668,8 @@ if __name__ == '__main__':
     for inertia in [150,200,250,300,350]:
         for FFR in [0,100,200,300,400,500,600]:
             md.data['system']['PFR_reserve_limit_curve']+=[[inertia,FFR,(inertia/250)*CurveApprox[int(FFR/100)]]]
+
+
     #
     #set the offset and scaling factor for each generators' curve
     for (g,g_dict) in md.data['elements']['generator'].items():
@@ -1675,7 +1677,7 @@ if __name__ == '__main__':
         g_dict['PFR_scale']=1
         g_dict['PFR_capacity']=100
         g_dict['PFR_price']=0
-        g_dict['FFR_capacity']=0
+        g_dict['FFR_capacity']=100
         g_dict['FFR_price']=0
 
 
